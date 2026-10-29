@@ -21,7 +21,7 @@ const createService = (overrides = {}) => {
   };
   const service = createScheduledTaskService({
     readSettingsFromDiskMigrated: async () => ({
-      projects: [{ id: 'project-test', path: '/repo' }],
+      projects: overrides.projects ?? [{ id: 'project-test', path: '/repo' }],
     }),
     sanitizeProjects: (projects) => projects,
     projectConfigRuntime,
@@ -164,7 +164,7 @@ describe('scheduled-task loop-file routes', () => {
     const app = {
       get: vi.fn(),
       put: vi.fn(),
-      post: vi.fn(),
+      post: vi.fn((route, handler) => handlers.set(`POST ${route}`, handler)),
       patch: vi.fn((route, handler) => handlers.set(`PATCH ${route}`, handler)),
       delete: vi.fn((route, handler) => handlers.set(`DELETE ${route}`, handler)),
     };
@@ -191,6 +191,35 @@ describe('scheduled-task loop-file routes', () => {
     expect(setLoopEnabled).toHaveBeenCalledWith('project-test', loopTask.id, false);
     expect(res.statusCode).toBe(200);
     expect(res.payload.task.enabled).toBe(false);
+  });
+
+  it('routes a task move through the service with its target scope', async () => {
+    const move = vi.fn(async () => ({ tasks: [], moved: true }));
+    const handlers = captureHandlers({ move });
+    const handler = handlers.get('POST /api/projects/:projectId/scheduled-tasks/:taskId/move');
+    const res = createResponse();
+
+    await handler({
+      params: { projectId: 'project-test', taskId: 'task-1' },
+      body: { targetProjectId: 'project-other', task: { name: 'renamed' } },
+    }, res);
+
+    expect(move).toHaveBeenCalledWith('project-test', 'task-1', 'project-other', { name: 'renamed' });
+    expect(res.statusCode).toBe(200);
+    expect(res.payload.moved).toBe(true);
+  });
+
+  it('rejects a move without a target scope', async () => {
+    const move = vi.fn();
+    const handlers = captureHandlers({ move });
+    const handler = handlers.get('POST /api/projects/:projectId/scheduled-tasks/:taskId/move');
+    const res = createResponse();
+
+    await handler({ params: { projectId: 'project-test', taskId: 'task-1' }, body: {} }, res);
+
+    expect(move).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(res.payload).toEqual({ error: 'targetProjectId is required' });
   });
 
   it('routes loop deletion through the loop-file service', async () => {
@@ -268,6 +297,73 @@ describe('scheduled-task service remove', () => {
     expect(projectConfigRuntime.deleteScheduledTask).toHaveBeenCalledWith('project-test', jsonTask.id);
     expect(scheduledTasksRuntime.syncProject).toHaveBeenCalled();
     expect(Array.isArray(tasks)).toBe(true);
+  });
+});
+
+describe('scheduled-task service move', () => {
+  const projects = [
+    { id: 'project-test', path: '/repo' },
+    { id: 'project-other', path: '/other' },
+  ];
+  const task = {
+    id: 'task-1',
+    name: 'nightly',
+    enabled: true,
+    schedule: { kind: 'daily', times: ['09:00'], timezone: 'UTC' },
+    execution: { prompt: 'run', providerID: 'openai', modelID: 'gpt-5' },
+    state: { createdAt: 1, updatedAt: 1, lastStatus: 'success' },
+  };
+
+  it('writes the target copy before removing the source row', async () => {
+    const upsertScheduledTask = vi.fn(async () => ({ task, tasks: [task], created: true }));
+    const deleteScheduledTask = vi.fn(async () => ({ deleted: true, tasks: [] }));
+    const listScheduledTasks = vi.fn(async (projectID) => (projectID === 'project-test' ? [task] : [task]));
+    const syncProject = vi.fn(async () => [task]);
+    const { service } = createService({
+      projects,
+      projectConfigRuntime: { listScheduledTasks, upsertScheduledTask, deleteScheduledTask },
+      scheduledTasksRuntime: { syncProject },
+    });
+
+    const result = await service.move('project-test', 'task-1', 'project-other', { name: 'renamed' });
+
+    expect(upsertScheduledTask).toHaveBeenCalledWith('project-other', expect.objectContaining({
+      id: 'task-1',
+      name: 'renamed',
+      state: task.state,
+    }));
+    expect(deleteScheduledTask).toHaveBeenCalledWith('project-test', 'task-1');
+    expect(syncProject).toHaveBeenCalledWith('project-test');
+    expect(syncProject).toHaveBeenCalledWith('project-other');
+    expect(result).toMatchObject({ moved: true, task: { id: 'task-1' } });
+    // The target write must happen before the source row disappears.
+    expect(upsertScheduledTask.mock.invocationCallOrder[0])
+      .toBeLessThan(deleteScheduledTask.mock.invocationCallOrder[0]);
+  });
+
+  it('refuses to move a loop-managed task', async () => {
+    const loopManaged = { ...task, loopFile: '/repo/.agents/loops/nightly.md' };
+    const { service, projectConfigRuntime } = createService({
+      projects,
+      projectConfigRuntime: { listScheduledTasks: vi.fn(async () => [loopManaged]) },
+    });
+
+    await expect(service.move('project-test', 'task-1', 'project-other'))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('cannot move') });
+    expect(projectConfigRuntime.deleteScheduledTask).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a plain upsert when the scope does not change', async () => {
+    const upsertScheduledTask = vi.fn(async () => ({ task, tasks: [task], created: false }));
+    const { service, projectConfigRuntime } = createService({
+      projects,
+      projectConfigRuntime: { listScheduledTasks: vi.fn(async () => [task]), upsertScheduledTask },
+    });
+
+    await service.move('project-test', 'task-1', 'project-test', { name: 'renamed' });
+
+    expect(upsertScheduledTask).toHaveBeenCalledWith('project-test', { id: 'task-1', name: 'renamed' });
+    expect(projectConfigRuntime.deleteScheduledTask).not.toHaveBeenCalled();
   });
 });
 

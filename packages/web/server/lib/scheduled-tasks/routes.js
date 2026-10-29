@@ -57,6 +57,38 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  app.post('/api/projects/:projectId/scheduled-tasks/:taskId/move', async (req, res) => {
+    const projectID = parseProjectID(req);
+    const taskID = parseTaskID(req);
+    const targetProjectID = asNonEmptyString(req?.body?.targetProjectId);
+    if (!projectID) {
+      return res.status(400).json({ error: 'projectId is required' });
+    }
+    if (!taskID) {
+      return res.status(400).json({ error: 'taskId is required' });
+    }
+    if (!targetProjectID) {
+      return res.status(400).json({ error: 'targetProjectId is required' });
+    }
+
+    const taskInput = req.body?.task && typeof req.body.task === 'object' && !Array.isArray(req.body.task)
+      ? req.body.task
+      : null;
+    try {
+      return res.json(await scheduledTaskService.move(projectID, taskID, targetProjectID, taskInput));
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      const message = error instanceof Error ? error.message : 'Failed to move scheduled task';
+      const statusCode = message.toLowerCase().includes('required') || message.toLowerCase().includes('invalid')
+        ? 400
+        : 500;
+      if (statusCode === 500) {
+        console.error('[ScheduledTasks] failed to move task:', error);
+      }
+      return res.status(statusCode).json({ error: message });
+    }
+  });
+
   // The picker asks the scheduler which of the candidates it already holds a
   // save would accept. Eligibility shares validateTarget's membership rule on
   // purpose: the client never decides it from its own worktree topology (#4757).

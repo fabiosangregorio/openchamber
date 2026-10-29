@@ -745,10 +745,13 @@ export function ScheduledTaskEditorDialog(props: {
   open: boolean;
   task: ScheduledTask | null;
   projectId: string;
+  /** Every scope a task can run in, for the project picker shown while editing. */
+  scopeOptions: Array<{ id: string; label: React.ReactNode }>;
   onOpenChange: (open: boolean) => void;
-  onSave: (draft: Partial<ScheduledTask>) => Promise<void>;
+  onSave: (draft: Partial<ScheduledTask>, targetProjectId: string) => Promise<void>;
 }) {
   const { open, task, onOpenChange, onSave } = props;
+  const [targetProjectId, setTargetProjectId] = React.useState(props.projectId);
   const { t, locale } = useI18n();
   const globalSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const liveSessions = useAllLiveSessions();
@@ -773,14 +776,14 @@ export function ScheduledTaskEditorDialog(props: {
   >({ status: 'idle' });
   const [eligibilityAttempt, setEligibilityAttempt] = React.useState(0);
   React.useEffect(() => {
-    if (!open || !props.projectId || !candidatesKey) {
+    if (!open || !targetProjectId || !candidatesKey) {
       setEligibility({ status: 'idle' });
       return undefined;
     }
     const controller = new AbortController();
     setEligibility((current) => (current.status === 'ready' ? current : { status: 'loading' }));
     fetchEligibleScheduledTaskTargets(
-      props.projectId,
+      targetProjectId,
       candidatesRef.current.map((session) => ({ sessionId: session.id, directory: session.directory ?? '' })),
       controller.signal,
     ).then(
@@ -792,7 +795,7 @@ export function ScheduledTaskEditorDialog(props: {
       },
     );
     return () => controller.abort();
-  }, [open, props.projectId, candidatesKey, eligibilityAttempt]);
+  }, [open, targetProjectId, candidatesKey, eligibilityAttempt]);
   const sessions = React.useMemo(
     () => (eligibility.status === 'ready' ? candidates.filter((session) => eligibility.ids.has(session.id)) : []),
     [candidates, eligibility],
@@ -876,6 +879,7 @@ export function ScheduledTaskEditorDialog(props: {
     if (!open) {
       return;
     }
+    setTargetProjectId(props.projectId);
     setDraft(
       toDraft(task, {
         providerID: currentProviderID,
@@ -891,7 +895,7 @@ export function ScheduledTaskEditorDialog(props: {
     setShowFileMention(false);
     setCommandQuery('');
     setMentionQuery('');
-  }, [open, task, currentProviderID, currentModelID, currentVariant, currentAgentName]);
+  }, [open, task, props.projectId, currentProviderID, currentModelID, currentVariant, currentAgentName]);
 
   React.useEffect(() => {
     if (!isDatePickerOpen) {
@@ -1254,14 +1258,14 @@ export function ScheduledTaskEditorDialog(props: {
 
     setSaving(true);
     try {
-      await onSave(payload);
+      await onSave(payload, targetProjectId);
       onOpenChange(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('sessions.scheduledTasks.editor.toast.saveFailed'));
     } finally {
       setSaving(false);
     }
-  }, [draft, onOpenChange, onSave, t]);
+  }, [draft, onOpenChange, onSave, t, targetProjectId]);
 
   const descriptionId = React.useId();
   const hasOpenFloatingMenu = React.useCallback(() => {
@@ -1278,6 +1282,23 @@ export function ScheduledTaskEditorDialog(props: {
 
   const formBody = (
     <div className="flex flex-col gap-5">
+      {task ? (
+        <SettingsStackedField label={t('sessions.scheduledTasks.dialog.project.label')}>
+          <Select value={targetProjectId} onValueChange={setTargetProjectId}>
+            <SelectTrigger>
+              <SelectValue>
+                {props.scopeOptions.find((option) => option.id === targetProjectId)?.label
+                  ?? t('sessions.scheduledTasks.dialog.project.placeholder')}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {props.scopeOptions.map((option) => (
+                <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsStackedField>
+      ) : null}
       <SettingsStackedField label={t('sessions.scheduledTasks.editor.sessionMode')}>
         <Select value={draft.sessionMode} onValueChange={(value: 'new' | 'existing') => setDraft((prev) => ({
           ...prev, sessionMode: value,

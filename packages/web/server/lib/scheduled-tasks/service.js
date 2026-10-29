@@ -156,6 +156,55 @@ export const createScheduledTaskService = (dependencies) => {
     };
   };
 
+  // Moves a task between projects (or the chats scope). The target copy is
+  // written before the source row is removed, so a failure between the two
+  // leaves a duplicate, never a lost task. Edits made in the same save are
+  // applied to the moved task; fields the editor omits (notably `state`) come
+  // from the existing row.
+  const move = async (projectID, taskID, targetProjectID, taskInput = null) => {
+    const source = await findProjectByID(projectID);
+    const target = await findProjectByID(targetProjectID);
+    const normalizedTaskID = asNonEmptyString(taskID);
+    if (!normalizedTaskID) throw new OpenChamberControlError('taskId is required', 400);
+    const edits = taskInput && typeof taskInput === 'object' && !Array.isArray(taskInput) ? taskInput : null;
+
+    if (source.id === target.id) {
+      return edits
+        ? upsert(source.id, { ...edits, id: normalizedTaskID })
+        : { tasks: await projectConfigRuntime.listScheduledTasks(source.id) };
+    }
+
+    const current = await projectConfigRuntime.listScheduledTasks(source.id);
+    const existing = current.find((task) => task.id === normalizedTaskID) || null;
+    if (!existing) throw new OpenChamberControlError('Task not found', 404);
+    if (existing.loopFile) {
+      throw new OpenChamberControlError(
+        'Loop task is managed by its .agents/loops markdown file; it cannot move between projects',
+        400,
+      );
+    }
+
+    const merged = { ...existing, ...edits, id: existing.id };
+    // Same rule as upsert: a paused task may keep a stale target, but an
+    // enabled one must belong to the project it now runs in.
+    if (merged.targetSessionId && merged.enabled !== false) {
+      await scheduledTasksRuntime.validateTarget(target.id, merged.targetSessionId);
+    }
+
+    const saved = await projectConfigRuntime.upsertScheduledTask(target.id, merged);
+    await projectConfigRuntime.deleteScheduledTask(source.id, normalizedTaskID);
+    await scheduledTasksRuntime.cancelWaitingPrompt?.(source.id, normalizedTaskID);
+    await scheduledTasksRuntime.syncProject(source.id);
+    await scheduledTasksRuntime.syncProject(target.id);
+
+    const tasks = await projectConfigRuntime.listScheduledTasks(target.id);
+    return {
+      tasks,
+      task: tasks.find((task) => task.id === saved.task.id) || saved.task,
+      moved: true,
+    };
+  };
+
   const remove = async (projectID, taskID) => {
     const { id } = await findProjectByID(projectID);
     const normalizedTaskID = asNonEmptyString(taskID);
@@ -255,6 +304,7 @@ export const createScheduledTaskService = (dependencies) => {
     resolveProjectID,
     list,
     upsert,
+    move,
     remove,
     run,
     setEnabled,

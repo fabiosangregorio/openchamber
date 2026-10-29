@@ -102,6 +102,41 @@ export const upsertScheduledTask = async (projectID: string, task: Partial<Sched
   return parsed.tasks as ScheduledTask[];
 };
 
+/**
+ * Moves a task to another project (or the chats scope), applying the edited
+ * draft on the way. The server writes the target copy before removing the
+ * source row, so a failure can duplicate a task but never lose it.
+ */
+export const moveScheduledTask = async (
+  projectID: string,
+  taskID: string,
+  targetProjectID: string,
+  task: Partial<ScheduledTask>,
+): Promise<ScheduledTask[]> => {
+  const safeProjectID = ensureProjectID(projectID);
+  const safeTaskID = ensureProjectID(taskID);
+  const safeTargetProjectID = ensureProjectID(targetProjectID);
+  const response = await runtimeFetch(
+    `/api/projects/${encodeURIComponent(safeProjectID)}/scheduled-tasks/${encodeURIComponent(safeTaskID)}/move`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({ targetProjectId: safeTargetProjectID, task }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, 'Failed to move scheduled task'));
+  }
+  const parsed = await response.json().catch(() => null);
+  if (!parsed || !Array.isArray(parsed.tasks)) {
+    return [];
+  }
+  return parsed.tasks as ScheduledTask[];
+};
+
 const ELIGIBLE_TARGETS_BATCH = 500;
 const eligibleTargetsResponseSchema = z.object({
   eligible: z.array(z.object({ sessionId: z.string().min(1) })),

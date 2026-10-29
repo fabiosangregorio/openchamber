@@ -25,6 +25,7 @@ import {
   deleteScheduledTask,
   deleteScheduledTaskLoopFile,
   fetchScheduledTasks,
+  moveScheduledTask,
   runScheduledTaskNow,
   ScheduledTaskBusyError,
   setLoopScheduledTaskEnabled,
@@ -417,7 +418,7 @@ export function ScheduledTasksView({ layout, onLeave }: {
     };
   }, [selectedProjectID, reloadTasks]);
 
-  const handleSaveTask = React.useCallback(async (taskDraft: Partial<ScheduledTask>) => {
+  const handleSaveTask = React.useCallback(async (taskDraft: Partial<ScheduledTask>, targetProjectId: string) => {
     // An existing task belongs to the scope whose list displayed it; a draft
     // without an id is created in the selected scope. Acting on the owner
     // keeps a scope switch made while the editor was open from misfiling a
@@ -426,7 +427,12 @@ export function ScheduledTasksView({ layout, onLeave }: {
     if (!projectID) {
       throw new Error(t('sessions.scheduledTasks.dialog.error.chooseProjectFirst'));
     }
-    await upsertScheduledTask(projectID, taskDraft);
+    if (taskDraft.id && targetProjectId && targetProjectId !== projectID) {
+      // Moving applies the same edits as a plain save, in one request.
+      await moveScheduledTask(projectID, taskDraft.id, targetProjectId, taskDraft);
+    } else {
+      await upsertScheduledTask(projectID, taskDraft);
+    }
     // Refresh what is on screen: normally the scope that was just saved; if
     // the user switched while the editor was open, the newer scope's list is
     // what the view belongs to and it must stay consistent.
@@ -575,6 +581,13 @@ export function ScheduledTasksView({ layout, onLeave }: {
     </span>
   );
   const hasScopes = chatsAvailable || projects.length > 0;
+
+  // The editor's own "Where to run" picker: an existing task can be moved to
+  // another scope instead of being deleted and recreated.
+  const scopeOptions = [
+    ...(chatsAvailable ? [{ id: CHAT_DRAFT_PROJECT_ID, label: chatsLabel }] : []),
+    ...projects.map((project) => ({ id: project.id, label: renderProjectLabel(project) })),
+  ];
 
   const projectSelector = (
     <div className="flex flex-col items-start gap-1">
@@ -891,6 +904,7 @@ export function ScheduledTasksView({ layout, onLeave }: {
         // The editor works in the task's own scope: an existing task keeps
         // the project it was captured with even if the selection has moved.
         projectId={editorOwnerRef.current || selectedProjectID}
+        scopeOptions={scopeOptions}
         onOpenChange={setEditorOpen}
         onSave={handleSaveTask}
       />

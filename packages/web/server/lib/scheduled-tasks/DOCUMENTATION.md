@@ -105,6 +105,20 @@ Manual `runNow` does not claim a schedule occurrence. It also runs paused
 (`enabled: false`) tasks — that is the point of the button — while scheduled
 dispatches still skip disabled tasks, and completion never re-arms a paused task.
 
+## Moving a task between scopes
+
+`POST /api/projects/:projectId/scheduled-tasks/:taskId/move` with
+`{ targetProjectId, task? }` moves a task to another project or the chats
+scope, applying the optional edited draft on the way. The service resolves
+both scopes, refuses loop-managed tasks (their markdown file owns them), and
+writes the target copy before removing the source row, so a failure between
+the two duplicates a task rather than losing it. Fields the editor omits,
+notably `state`, are carried over from the existing row. An enabled task with
+a `targetSessionId` is validated against the target scope before anything is
+written; a paused task may keep a stale target, as on a plain save. Both
+scopes are synced afterwards, and any waiting prompt in the source scope is
+cancelled.
+
 ## Existing-session tasks
 
 `targetSessionId` sends to an existing session instead of creating one.
